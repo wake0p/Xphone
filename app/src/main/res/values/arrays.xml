@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="shizuku_files">
+        <!-- Leave empty if you only use Shizuku API -->
+    </string-array>
+</resources>
