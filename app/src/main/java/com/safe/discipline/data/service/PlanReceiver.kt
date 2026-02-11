@@ -43,11 +43,25 @@ class PlanReceiver : BroadcastReceiver() {
                 }
 
                 // 3. 计算目标：当前应该隐藏的所有包
+                // shouldBlockNow() 封装了屏蔽模式逻辑：
+                //   HIDE_DURING: 计划激活时隐藏
+                //   SHOW_DURING: 计划不激活时隐藏
+                // 强制模式始终保持隐藏
                 val currentlyShouldBeHidden =
                         plans
-                                .filter { it.isEnabled && it.isActiveNow() }
+                                .filter { plan ->
+                                    plan.isEnabled && (plan.shouldBlockNow() || plan.isForceMode)
+                                }
                                 .flatMap { it.resolveAllPackages() }
                                 .toSet()
+
+                // 调试日志：输出每个计划的状态
+                plans.forEach { plan ->
+                    Log.d(
+                            "OutPhone",
+                            "计划[${plan.label}]: 启用=${plan.isEnabled}, 激活=${plan.isActiveNow()}, 应屏蔽=${plan.shouldBlockNow()}, 模式=${plan.blockMode}, 强制=${plan.isForceMode}, 包数=${plan.resolveAllPackages().size}"
+                    )
+                }
 
                 // 4. 获取所有曾经被管理过的包
                 val allManagedPackages = plans.flatMap { it.resolveAllPackages() }.toSet()

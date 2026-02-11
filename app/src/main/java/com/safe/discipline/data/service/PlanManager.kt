@@ -4,7 +4,9 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import com.safe.discipline.data.model.BlockMode
 import com.safe.discipline.data.model.BlockPlan
+import com.safe.discipline.data.model.ScheduleType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -87,6 +89,9 @@ object PlanManager {
                         put("isForceMode", plan.isForceMode)
                         put("unlockLimit", plan.unlockLimit)
                         put("usedUnlocks", plan.usedUnlocks)
+                        put("scheduleType", plan.scheduleType.name)
+                        put("specificDates", JSONArray(plan.specificDates))
+                        put("blockMode", plan.blockMode.name)
                     }
             array.put(obj)
         }
@@ -97,11 +102,100 @@ object PlanManager {
 
         // 1. 任何计划更新后，重新调度下一次检查
         scheduleNextCheck(context)
-        // 2. 立即触发一次检查，确保所见即所得
+        // 2. 直接在后台线程执行一次计划检查，确保立即生效
+        executePlanCheckNow(context)
+        // 3. 同时发送广播作为备份触发
         val intent = Intent(context, PlanReceiver::class.java)
         context.sendBroadcast(intent)
-        // 3. 更新守护服务状态
+        // 4. 更新守护服务状态
         updateServiceState(context)
+    }
+
+    /**
+     * 立即在后台执行一次计划检查与应用状态同步
+     * 不依赖广播，直接执行核心逻辑
+     */
+    fun executePlanCheckNow(context: Context) {
+        scope.launch {
+            try {
+                android.util.Log.d("OutPhone", ">>> executePlanCheckNow 开始直接执行计划检查 <<<")
+
+                val plans = getAllPlans(context)
+                val groups = getAllGroups(context).associateBy { it.id }
+
+                if (!ShizukuService.isReady()) {
+                    android.util.Log.e("OutPhone", "直接检查失败: Shizuku 未就绪")
+                    return@launch
+                }
+
+                val coreSafePackages = setOf(context.packageName, "moe.shizuku.manager")
+
+                fun com.safe.discipline.data.model.BlockPlan.resolveAllPackages(): Set<String> {
+                    val result = packages.toMutableSet()
+                    groupIds.forEach { gId -> groups[gId]?.packages?.let { result.addAll(it) } }
+                    result.removeAll(coreSafePackages)
+                    return result
+                }
+
+                // 计算应该隐藏的包
+                val currentlyShouldBeHidden =
+                        plans
+                                .filter { plan ->
+                                    plan.isEnabled && (plan.shouldBlockNow() || plan.isForceMode)
+                                }
+                                .flatMap { it.resolveAllPackages() }
+                                .toSet()
+
+                // 详细日志
+                plans.forEach { plan ->
+                    val pkgs = plan.resolveAllPackages()
+                    android.util.Log.d(
+                            "OutPhone",
+                            "直接检查·计划[${plan.label}]: 启用=${plan.isEnabled}, " +
+                            "模式=${plan.blockMode}, " +
+                            "isActiveNow=${plan.isActiveNow()}, " +
+                            "shouldBlock=${plan.shouldBlockNow()}, " +
+                            "强制=${plan.isForceMode}, " +
+                            "包=[${pkgs.joinToString(",")}]"
+                    )
+                }
+
+                android.util.Log.d("OutPhone", "直接检查·目标隐藏 ${currentlyShouldBeHidden.size} 个包: ${currentlyShouldBeHidden.joinToString(",")}")
+
+                val allManagedPackages = plans.flatMap { it.resolveAllPackages() }.toSet()
+                val prefs = context.getSharedPreferences("discipline_state", Context.MODE_PRIVATE)
+                val lastManagedSet = prefs.getStringSet("last_managed_packages", emptySet()) ?: emptySet()
+                val scanScope = allManagedPackages + lastManagedSet
+
+                val pm = context.packageManager
+                var changeCount = 0
+                for (pkg in scanScope) {
+                    val targetEnable = !currentlyShouldBeHidden.contains(pkg)
+                    val currentStatus =
+                            try {
+                                pm.getApplicationInfo(
+                                        pkg,
+                                        android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS or
+                                                android.content.pm.PackageManager.MATCH_UNINSTALLED_PACKAGES
+                                ).enabled
+                            } catch (e: Exception) {
+                                true
+                            }
+
+                    if (currentStatus != targetEnable) {
+                        android.util.Log.d("OutPhone", "直接检查·校准: $pkg 当前=${if(currentStatus)"启用" else "禁用"} -> 目标=${if(targetEnable)"启用" else "禁用"}")
+                        ShizukuService.setAppEnabled(context, pkg, targetEnable)
+                        changeCount++
+                    }
+                }
+
+                prefs.edit().putStringSet("last_managed_packages", allManagedPackages).apply()
+                android.util.Log.d("OutPhone", ">>> executePlanCheckNow 完成, 校准了 $changeCount 个应用 <<<")
+
+            } catch (e: Throwable) {
+                android.util.Log.e("OutPhone", "executePlanCheckNow 异常", e)
+            }
+        }
     }
 
     private fun parsePlans(json: String): List<BlockPlan> {
@@ -123,8 +217,35 @@ object PlanManager {
                 }
 
                 val days = mutableListOf<Int>()
-                val daysArr = obj.getJSONArray("daysOfWeek")
-                for (j in 0 until daysArr.length()) days.add(daysArr.getInt(j))
+                val daysArr = obj.optJSONArray("daysOfWeek")
+                if (daysArr != null) {
+                    for (j in 0 until daysArr.length()) days.add(daysArr.getInt(j))
+                } else {
+                    days.addAll(listOf(1,2,3,4,5,6,7))
+                }
+
+                // 解析调度类型
+                val scheduleTypeStr = obj.optString("scheduleType", "WEEKLY")
+                val scheduleType = try {
+                    ScheduleType.valueOf(scheduleTypeStr)
+                } catch (e: Exception) {
+                    ScheduleType.WEEKLY
+                }
+
+                // 解析指定日期
+                val specificDates = mutableListOf<String>()
+                val datesArr = obj.optJSONArray("specificDates")
+                if (datesArr != null) {
+                    for (j in 0 until datesArr.length()) specificDates.add(datesArr.getString(j))
+                }
+
+                // 解析屏蔽模式
+                val blockModeStr = obj.optString("blockMode", "HIDE_DURING")
+                val blockMode = try {
+                    BlockMode.valueOf(blockModeStr)
+                } catch (e: Exception) {
+                    BlockMode.HIDE_DURING
+                }
 
                 list.add(
                         BlockPlan(
@@ -138,7 +259,10 @@ object PlanManager {
                                 isEnabled = obj.optBoolean("isEnabled", true),
                                 isForceMode = obj.optBoolean("isForceMode", false),
                                 unlockLimit = obj.optInt("unlockLimit", 3),
-                                usedUnlocks = obj.optInt("usedUnlocks", 0)
+                                usedUnlocks = obj.optInt("usedUnlocks", 0),
+                                scheduleType = scheduleType,
+                                specificDates = specificDates,
+                                blockMode = blockMode
                         )
                 )
             }

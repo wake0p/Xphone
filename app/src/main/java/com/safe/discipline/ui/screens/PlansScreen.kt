@@ -1,11 +1,12 @@
 package com.safe.discipline.ui.screens
-
+import android.app.DatePickerDialog
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,7 +25,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.safe.discipline.data.model.AppInfo
+import com.safe.discipline.data.model.BlockMode
 import com.safe.discipline.data.model.BlockPlan
+import com.safe.discipline.data.model.ScheduleType
 import com.safe.discipline.data.service.SettingsManager
 import com.safe.discipline.ui.components.*
 import com.safe.discipline.viewmodel.MainViewModel
@@ -148,7 +151,7 @@ fun PlansScreen(viewModel: MainViewModel) {
                 initialPlan = planToEdit,
                 installedApps = viewModel.installedApps.collectAsState().value,
                 allGroups = viewModel.groups.collectAsState().value,
-                onConfirm = { name, pkgs, gIds, days, start, end ->
+                onConfirm = { name, pkgs, gIds, days, start, end, schedType, dates, bMode ->
                     val isEditing = planToEdit != null
                     val newPlan =
                             planToEdit?.copy(
@@ -157,7 +160,10 @@ fun PlansScreen(viewModel: MainViewModel) {
                                     groupIds = gIds,
                                     daysOfWeek = days,
                                     startTime = start,
-                                    endTime = end
+                                    endTime = end,
+                                    scheduleType = schedType,
+                                    specificDates = dates,
+                                    blockMode = bMode
                             )
                                     ?: BlockPlan(
                                             label = name,
@@ -166,7 +172,10 @@ fun PlansScreen(viewModel: MainViewModel) {
                                             daysOfWeek = days,
                                             startTime = start,
                                             endTime = end,
-                                            isEnabled = false // Default closed as requested
+                                            isEnabled = false,
+                                            scheduleType = schedType,
+                                            specificDates = dates,
+                                            blockMode = bMode
                                     )
 
                     if (isEditing && forceModeEnabled && planToEdit!!.isEnabled) {
@@ -290,12 +299,18 @@ fun PlanItemCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val groupText =
                         if (plan.groupIds.isNotEmpty()) "及 ${plan.groupIds.size} 个分类" else ""
-                Text(
-                        "管理 ${plan.packages.size} 个应用$groupText",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.outline
-                )
-                Spacer(modifier = Modifier.weight(1f))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                            "管理 ${plan.packages.size} 个应用$groupText",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.outline
+                    )
+                    Text(
+                            plan.getScheduleDescription(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+                    )
+                }
                 IconButton(onClick = onDelete, modifier = Modifier.size(24.dp)) {
                     Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error)
                 }
@@ -310,7 +325,7 @@ fun CreatePlanFullScreenDialog(
         initialPlan: BlockPlan? = null,
         installedApps: List<AppInfo>,
         allGroups: List<com.safe.discipline.data.model.AppGroup>,
-        onConfirm: (String, List<String>, List<String>, List<Int>, String, String) -> Unit,
+        onConfirm: (String, List<String>, List<String>, List<Int>, String, String, ScheduleType, List<String>, BlockMode) -> Unit,
         onDismiss: () -> Unit
 ) {
     var name by remember { mutableStateOf(initialPlan?.label ?: "我的计划") }
@@ -329,6 +344,13 @@ fun CreatePlanFullScreenDialog(
         mutableStateListOf<String>().apply { addAll(initialPlan?.groupIds ?: emptyList()) }
     }
     var searchQuery by remember { mutableStateOf("") }
+
+    // 调度类型状态
+    var scheduleType by remember { mutableStateOf(initialPlan?.scheduleType ?: ScheduleType.WEEKLY) }
+    val specificDates = remember {
+        mutableStateListOf<String>().apply { addAll(initialPlan?.specificDates ?: emptyList()) }
+    }
+    var blockMode by remember { mutableStateOf(initialPlan?.blockMode ?: BlockMode.HIDE_DURING) }
 
     var pickingTimeForStart by remember { mutableStateOf<Boolean?>(null) }
 
@@ -365,7 +387,10 @@ fun CreatePlanFullScreenDialog(
                                                             selectedGroupIds.toList(),
                                                             selectedDays.toList(),
                                                             startTime,
-                                                            endTime
+                                                            endTime,
+                                                            scheduleType,
+                                                            specificDates.toList(),
+                                                            blockMode
                                                     )
                                                 }
                                             },
@@ -380,77 +405,238 @@ fun CreatePlanFullScreenDialog(
                     }
             ) { padding ->
                 Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-                    Column(
-                            modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedTextField(
-                                value = name,
-                                onValueChange = { name = it },
-                                label = { Text("计划名称") },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp)
-                        )
+                    // --- 设置区域（可折叠） ---
+                    var settingsExpanded by remember { mutableStateOf(true) }
 
+                    // 折叠/展开 标题栏
+                    Surface(
+                            modifier = Modifier.fillMaxWidth()
+                                    .clickable { settingsExpanded = !settingsExpanded }
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                            color = Color.Transparent
+                    ) {
                         Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
                         ) {
-                            ReadOnlyTextField(
-                                    value = startTime,
-                                    label = "开始时刻",
-                                    onClick = { pickingTimeForStart = true },
+                            Text(
+                                    "计划设置",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
                                     modifier = Modifier.weight(1f)
                             )
-                            ReadOnlyTextField(
-                                    value = endTime,
-                                    label = "结束时刻",
-                                    onClick = { pickingTimeForStart = false },
-                                    modifier = Modifier.weight(1f)
+                            if (!settingsExpanded) {
+                                // 折叠时显示摘要
+                                Text(
+                                        buildString {
+                                            append(if (blockMode == BlockMode.HIDE_DURING) "隐藏" else "可用")
+                                            append(" $startTime~$endTime")
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.padding(end = 4.dp)
+                                )
+                            }
+                            Icon(
+                                    if (settingsExpanded) Icons.Default.KeyboardArrowUp
+                                    else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = if (settingsExpanded) "收起" else "展开",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.outline
                             )
                         }
+                    }
 
-                        Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                    // 可折叠的设置内容
+                    AnimatedVisibility(visible = settingsExpanded) {
+                        Column(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            val days = listOf("日", "一", "二", "三", "四", "五", "六")
-                            for (i in 1..7) {
-                                Box(
-                                        modifier =
-                                                Modifier.size(40.dp)
-                                                        .clip(CircleShape)
-                                                        .background(
-                                                                if (selectedDays.contains(i))
-                                                                        MaterialTheme.colorScheme
-                                                                                .primary
-                                                                else
-                                                                        MaterialTheme.colorScheme
-                                                                                .surfaceVariant
-                                                        )
-                                                        .clickable {
-                                                            if (selectedDays.contains(i))
-                                                                    selectedDays.remove(i)
-                                                            else selectedDays.add(i)
-                                                        },
-                                        contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                            days[i - 1],
-                                            color =
-                                                    if (selectedDays.contains(i))
-                                                            MaterialTheme.colorScheme.onPrimary
-                                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                            OutlinedTextField(
+                                    value = name,
+                                    onValueChange = { name = it },
+                                    label = { Text("计划名称") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    singleLine = true
+                            )
+
+                            // 屏蔽模式 + 说明（紧凑排列）
+                            Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("模式", style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.outline)
+                                FilterChip(
+                                        selected = blockMode == BlockMode.HIDE_DURING,
+                                        onClick = { blockMode = BlockMode.HIDE_DURING },
+                                        label = { Text("指定时隐藏", style = MaterialTheme.typography.labelSmall) },
+                                        leadingIcon = if (blockMode == BlockMode.HIDE_DURING) {
+                                            { Icon(Icons.Default.Check, null, modifier = Modifier.size(14.dp)) }
+                                        } else null,
+                                        shape = RoundedCornerShape(8.dp)
+                                )
+                                FilterChip(
+                                        selected = blockMode == BlockMode.SHOW_DURING,
+                                        onClick = { blockMode = BlockMode.SHOW_DURING },
+                                        label = { Text("仅指定时可用", style = MaterialTheme.typography.labelSmall) },
+                                        leadingIcon = if (blockMode == BlockMode.SHOW_DURING) {
+                                            { Icon(Icons.Default.Check, null, modifier = Modifier.size(14.dp)) }
+                                        } else null,
+                                        shape = RoundedCornerShape(8.dp)
+                                )
+                            }
+
+                            // 时间选择
+                            Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                ReadOnlyTextField(
+                                        value = startTime,
+                                        label = if (blockMode == BlockMode.HIDE_DURING) "隐藏开始" else "可用开始",
+                                        onClick = { pickingTimeForStart = true },
+                                        modifier = Modifier.weight(1f)
+                                )
+                                ReadOnlyTextField(
+                                        value = endTime,
+                                        label = if (blockMode == BlockMode.HIDE_DURING) "恢复显示" else "停止可用",
+                                        onClick = { pickingTimeForStart = false },
+                                        modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            // 调度方式（紧凑）
+                            Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("调度", style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.outline)
+                                ScheduleType.values().forEach { type ->
+                                    val label = when (type) {
+                                        ScheduleType.DAILY -> "每天"
+                                        ScheduleType.WEEKLY -> "按星期"
+                                        ScheduleType.SPECIFIC_DATES -> "指定日期"
+                                    }
+                                    FilterChip(
+                                            selected = scheduleType == type,
+                                            onClick = { scheduleType = type },
+                                            label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                            leadingIcon = if (scheduleType == type) {
+                                                { Icon(Icons.Default.Check, null, modifier = Modifier.size(14.dp)) }
+                                            } else null,
+                                            shape = RoundedCornerShape(8.dp)
                                     )
                                 }
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                            // 按星期重复
+                            AnimatedVisibility(visible = scheduleType == ScheduleType.WEEKLY) {
+                                Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    val days = listOf("日", "一", "二", "三", "四", "五", "六")
+                                    for (i in 1..7) {
+                                        Box(
+                                                modifier =
+                                                        Modifier.size(36.dp)
+                                                                .clip(CircleShape)
+                                                                .background(
+                                                                        if (selectedDays.contains(i))
+                                                                                MaterialTheme.colorScheme.primary
+                                                                        else MaterialTheme.colorScheme.surfaceVariant
+                                                                )
+                                                                .clickable {
+                                                                    if (selectedDays.contains(i))
+                                                                            selectedDays.remove(i)
+                                                                    else selectedDays.add(i)
+                                                                },
+                                                contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                    days[i - 1],
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color =
+                                                            if (selectedDays.contains(i))
+                                                                    MaterialTheme.colorScheme.onPrimary
+                                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 指定日期选择器
+                            AnimatedVisibility(visible = scheduleType == ScheduleType.SPECIFIC_DATES) {
+                                val context = LocalContext.current
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    if (specificDates.isNotEmpty()) {
+                                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            items(specificDates.toList()) { date ->
+                                                InputChip(
+                                                        selected = true,
+                                                        onClick = { specificDates.remove(date) },
+                                                        label = { Text(date.substring(5), style = MaterialTheme.typography.labelSmall) },
+                                                        trailingIcon = {
+                                                            Icon(Icons.Default.Close, "移除", modifier = Modifier.size(12.dp))
+                                                        },
+                                                        shape = RoundedCornerShape(8.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    OutlinedButton(
+                                            onClick = {
+                                                val cal = Calendar.getInstance()
+                                                DatePickerDialog(
+                                                        context,
+                                                        { _, y, m, d ->
+                                                            val dateStr = String.format("%04d-%02d-%02d", y, m + 1, d)
+                                                            if (!specificDates.contains(dateStr)) {
+                                                                specificDates.add(dateStr)
+                                                                specificDates.sort()
+                                                            }
+                                                        },
+                                                        cal.get(Calendar.YEAR),
+                                                        cal.get(Calendar.MONTH),
+                                                        cal.get(Calendar.DAY_OF_MONTH)
+                                                ).show()
+                                            },
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("添加日期", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(2.dp))
+                        }
+                    }
+
+                    // 分隔线
+                    Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                    // --- 应用选择区域（占满剩余空间） ---
+                    Column(
+                            modifier = Modifier
+                                    .padding(horizontal = 16.dp)
+                                    .padding(top = 8.dp)
+                                    .weight(1f)
+                    ) {
                         Text(
                                 "选择管控范围",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 6.dp)
                         )
 
                         AppSelectorComponent(
@@ -460,7 +646,7 @@ fun CreatePlanFullScreenDialog(
                                 selectedGroupIds = selectedGroupIds,
                                 searchQuery = searchQuery,
                                 onSearchQueryChange = { searchQuery = it },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.fillMaxSize()
                         )
                     }
                 }
@@ -471,7 +657,11 @@ fun CreatePlanFullScreenDialog(
     if (pickingTimeForStart != null) {
         PremiumTimePickerDialog(
                 initialTime = if (pickingTimeForStart == true) startTime else endTime,
-                title = if (pickingTimeForStart == true) "设定禁用时刻" else "设定恢复时刻",
+                title = if (pickingTimeForStart == true) {
+                    if (blockMode == BlockMode.HIDE_DURING) "设定隐藏开始时刻" else "设定可用开始时刻"
+                } else {
+                    if (blockMode == BlockMode.HIDE_DURING) "设定恢复显示时刻" else "设定停止可用时刻"
+                },
                 onConfirm = { formattedTime ->
                     if (pickingTimeForStart == true) startTime = formattedTime
                     else endTime = formattedTime

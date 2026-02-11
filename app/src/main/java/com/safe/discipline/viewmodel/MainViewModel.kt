@@ -200,7 +200,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     com.safe.discipline.data.service.PlanManager.getAllPlans(
                                                     context
                                             )
-                                            .filter { it.isEnabled && it.isActiveNow() }
+                                            .filter { it.isEnabled && it.shouldBlockNow() }
                             val allGroups =
                                     com.safe.discipline.data.service.PlanManager.getAllGroups(
                                             context

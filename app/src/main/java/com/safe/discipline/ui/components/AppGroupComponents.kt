@@ -16,12 +16,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.safe.discipline.data.model.AppGroup
 import com.safe.discipline.data.model.AppInfo
+import com.safe.discipline.data.service.SettingsManager
 import com.safe.discipline.viewmodel.MainViewModel
 import java.util.*
 
@@ -193,13 +195,27 @@ fun AppGroupsDialog(viewModel: MainViewModel, onDismiss: () -> Unit) {
 
 @Composable
 fun GroupEditDialog(viewModel: MainViewModel, group: AppGroup?, onDismiss: () -> Unit) {
+        val context = LocalContext.current
+        val forceModeEnabled by SettingsManager.forceModeEnabled.collectAsState()
+        val plans by viewModel.plans.collectAsState()
+        
+        // 检查该分类是否被已启用的计划使用
+        val isUsedByActivePlan = remember(group, plans) {
+                if (group == null) false
+                else plans.any { it.isEnabled && it.groupIds.contains(group.id) }
+        }
+        val isProtectedByForceMode = forceModeEnabled && isUsedByActivePlan
+        
         var name by remember { mutableStateOf(group?.name ?: "") }
         val selectedPackages = remember {
                 mutableStateListOf<String>().apply { if (group != null) addAll(group.packages) }
         }
+        // 记录打开编辑时分类中已有的包（强制模式下这些不可移除）
+        val originalPackages = remember { group?.packages?.toSet() ?: emptySet() }
         val installedApps by viewModel.installedApps.collectAsState()
         val allGroups by viewModel.groups.collectAsState()
         var searchQuery by remember { mutableStateOf("") }
+        var showProtectionWarning by remember { mutableStateOf(false) }
 
         Dialog(
                 onDismissRequest = onDismiss,
@@ -231,64 +247,125 @@ fun GroupEditDialog(viewModel: MainViewModel, group: AppGroup?, onDismiss: () ->
 
                                 Spacer(modifier = Modifier.height(16.dp))
 
+                                // 显示保护提示（简洁版）
+                                if (isProtectedByForceMode) {
+                                        Row(
+                                                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                                Icon(
+                                                        Icons.Default.Lock,
+                                                        null,
+                                                        tint = MaterialTheme.colorScheme.error,
+                                                        modifier = Modifier.size(12.dp)
+                                                )
+                                                Text(
+                                                        "强制模式保护中·可添加不可移除",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.error
+                                                )
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                }
+
                                 AppSelectorComponent(
                                         installedApps = installedApps,
                                         allGroups =
-                                                allGroups.filter { it.id != group?.id }, // 避免循环引用
+                                                allGroups.filter { it.id != group?.id },
                                         selectedPackages = selectedPackages,
                                         searchQuery = searchQuery,
                                         onSearchQueryChange = { searchQuery = it },
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.weight(1f),
+                                        protectedPackages = if (isProtectedByForceMode) originalPackages else emptySet()
                                 )
 
-                                Spacer(modifier = Modifier.height(16.dp))
+                                Spacer(modifier = Modifier.height(12.dp))
 
-                                Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                        if (group != null) {
-                                                OutlinedButton(
-                                                        onClick = {
-                                                                viewModel.deleteGroup(group.id)
-                                                                onDismiss()
-                                                        },
-                                                        modifier =
-                                                                Modifier.weight(1f).height(50.dp),
-                                                        shape = RoundedCornerShape(12.dp),
-                                                        colors =
-                                                                ButtonDefaults.outlinedButtonColors(
-                                                                        contentColor =
-                                                                                MaterialTheme
-                                                                                        .colorScheme
-                                                                                        .error
-                                                                )
-                                                ) { Text("删除") }
-                                        }
-
-                                        Button(
+                                // 删除按钮（编辑模式下显示，独立一行）
+                                if (group != null) {
+                                        TextButton(
                                                 onClick = {
-                                                        if (name.isNotBlank()) {
-                                                                viewModel.saveGroup(
-                                                                        AppGroup(
-                                                                                id = group?.id
-                                                                                                ?: UUID.randomUUID()
-                                                                                                        .toString(),
-                                                                                name = name,
-                                                                                packages =
-                                                                                        selectedPackages
-                                                                                                .toSet()
-                                                                        )
-                                                                )
+                                                        if (isProtectedByForceMode) {
+                                                                showProtectionWarning = true
+                                                        } else {
+                                                                viewModel.deleteGroup(group.id)
                                                                 onDismiss()
                                                         }
                                                 },
-                                                modifier = Modifier.weight(2f).height(50.dp),
-                                                shape = RoundedCornerShape(12.dp)
-                                        ) { Text("保存分类") }
+                                                modifier = Modifier.fillMaxWidth(),
+                                                enabled = !isProtectedByForceMode,
+                                                colors = ButtonDefaults.textButtonColors(
+                                                        contentColor = if (isProtectedByForceMode)
+                                                                MaterialTheme.colorScheme.outline
+                                                        else
+                                                                MaterialTheme.colorScheme.error
+                                                )
+                                        ) {
+                                                Icon(
+                                                        if (isProtectedByForceMode) Icons.Default.Lock else Icons.Default.Delete,
+                                                        null,
+                                                        modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(
+                                                        if (isProtectedByForceMode) "强制模式下无法删除" else "删除此分类",
+                                                        style = MaterialTheme.typography.labelMedium
+                                                )
+                                        }
                                 }
+
+                                Spacer(modifier = Modifier.height(4.dp))
+
+                                // 保存按钮（全宽）
+                                Button(
+                                        onClick = {
+                                                if (name.isNotBlank()) {
+                                                        viewModel.saveGroup(
+                                                                AppGroup(
+                                                                        id = group?.id
+                                                                                ?: UUID.randomUUID()
+                                                                                        .toString(),
+                                                                        name = name,
+                                                                        packages =
+                                                                                selectedPackages
+                                                                                        .toSet()
+                                                                )
+                                                        )
+                                                        onDismiss()
+                                                }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                                        shape = RoundedCornerShape(12.dp)
+                                ) { Text("保存分类") }
                         }
                 }
+        }
+        
+        // 保护警告对话框
+        if (showProtectionWarning) {
+                AlertDialog(
+                        onDismissRequest = { showProtectionWarning = false },
+                        icon = {
+                                Icon(
+                                        Icons.Default.Lock,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.error
+                                )
+                        },
+                        title = { Text("强制模式保护") },
+                        text = {
+                                Text(
+                                        "「${group?.name}」正被自动计划使用，强制模式下无法删除。\n" +
+                                        "请先关闭相关计划或强制模式。"
+                                )
+                        },
+                        confirmButton = {
+                                TextButton(onClick = { showProtectionWarning = false }) {
+                                        Text("我知道了")
+                                }
+                        }
+                )
         }
 }
 
@@ -301,7 +378,9 @@ fun AppSelectorComponent(
         selectedGroupIds: MutableList<String>? = null,
         searchQuery: String,
         onSearchQueryChange: (String) -> Unit,
-        modifier: Modifier = Modifier
+        modifier: Modifier = Modifier,
+        isRemoveProtected: Boolean = false,  // 强制模式保护（旧接口兼容）
+        protectedPackages: Set<String> = emptySet()  // 具体受保护的包名（新接口，仅这些不可移除）
 ) {
         val filteredApps by
                 remember(installedApps, searchQuery) {
@@ -336,6 +415,7 @@ fun AppSelectorComponent(
 
         // 对话框状态：当用户尝试取消选中一个属于分类的应用时显示
         var showRemoveConfirmDialog by remember { mutableStateOf<Pair<AppInfo, String>?>(null) }
+        var showReadOnlyWarning by remember { mutableStateOf(false) }
 
         Column(modifier = modifier) {
                 OutlinedTextField(
@@ -466,6 +546,12 @@ fun AppSelectorComponent(
                                         selected = isSelected,
                                         groupLabel = groupName,
                                         onSelect = { isSel ->
+                                                // 强制模式保护：仅原有成员不可移除，新添加的可取消
+                                                if (!isSel && (isRemoveProtected || protectedPackages.contains(app.packageName))) {
+                                                        showReadOnlyWarning = true
+                                                        return@AppItemRow
+                                                }
+                                                
                                                 if (isSel) {
                                                         // 勾选应用
                                                         if (!selectedPackages.contains(
@@ -523,6 +609,20 @@ fun AppSelectorComponent(
                                         TextButton(onClick = { showRemoveConfirmDialog = null }) {
                                                 Text("不做修改")
                                         }
+                                }
+                        }
+                )
+        }
+        
+        // 只读模式警告提示（简洁版）
+        if (showReadOnlyWarning) {
+                AlertDialog(
+                        onDismissRequest = { showReadOnlyWarning = false },
+                        title = { Text("无法移除") },
+                        text = { Text("强制模式保护中，需先关闭强制模式") },
+                        confirmButton = {
+                                TextButton(onClick = { showReadOnlyWarning = false }) {
+                                        Text("好的")
                                 }
                         }
                 )
