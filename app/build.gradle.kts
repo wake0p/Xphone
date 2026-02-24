@@ -4,6 +4,57 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val embeddedServerAssetFile = layout.projectDirectory.file("src/main/assets/server.dex")
+val embeddedServerDexPathProp = providers.gradleProperty("embeddedServerDexPath")
+val embeddedServerDexPathEnv = providers.environmentVariable("EMBEDDED_SERVER_DEX")
+
+tasks.register("syncEmbeddedServerDex") {
+    group = "embedded"
+    description = "Copy external server.dex into app/src/main/assets/server.dex"
+    doLast {
+        val sourcePath = embeddedServerDexPathProp.orNull ?: embeddedServerDexPathEnv.orNull
+        if (sourcePath.isNullOrBlank()) {
+            throw GradleException(
+                "Missing server dex source path. Provide -PembeddedServerDexPath=/abs/path/server.dex " +
+                    "or set EMBEDDED_SERVER_DEX."
+            )
+        }
+
+        val sourceFile = file(sourcePath)
+        if (!sourceFile.exists() || !sourceFile.isFile) {
+            throw GradleException("server dex not found: ${sourceFile.absolutePath}")
+        }
+        if (!sourceFile.name.endsWith(".dex", ignoreCase = true)) {
+            throw GradleException("server dex must be a .dex file: ${sourceFile.absolutePath}")
+        }
+
+        val destFile = embeddedServerAssetFile.asFile
+        destFile.parentFile.mkdirs()
+        sourceFile.copyTo(destFile, overwrite = true)
+        println("Embedded server dex synced: ${destFile.absolutePath}")
+    }
+}
+
+tasks.register("verifyEmbeddedServerDex") {
+    group = "embedded"
+    description = "Check app/src/main/assets/server.dex exists and is non-empty"
+    doLast {
+        val file = embeddedServerAssetFile.asFile
+        if (!file.exists() || !file.isFile || file.length() <= 0L) {
+            throw GradleException(
+                "Missing ${file.absolutePath}. Run :app:syncEmbeddedServerDex first."
+            )
+        }
+        println("Embedded server dex verified: ${file.absolutePath} (${file.length()} bytes)")
+    }
+}
+
+tasks.register("prepareEmbeddedServerDex") {
+    group = "embedded"
+    description = "Sync then verify embedded server dex"
+    dependsOn("syncEmbeddedServerDex", "verifyEmbeddedServerDex")
+}
+
 android {
     namespace = "com.safe.discipline"
     ndkVersion = "29.0.13846066"

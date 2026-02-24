@@ -2,8 +2,6 @@ package com.safe.discipline.ui.screens
 
 import android.content.Intent
 import android.provider.Settings as AndroidSettings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -49,6 +47,8 @@ fun HomeScreen(viewModel: MainViewModel = viewModel()) {
     val hasPermission by viewModel.hasPermission.collectAsState()
     val installedApps by viewModel.installedApps.collectAsState()
     val autoPort by viewModel.autoPort.collectAsState()
+    val activationCommand by viewModel.activationCommand.collectAsState()
+    val activationError by viewModel.activationError.collectAsState()
 
     var currentTab by remember { mutableStateOf(HomeTab.CONTROL) }
     var showAuthHelp by remember { mutableStateOf(false) }
@@ -71,15 +71,6 @@ fun HomeScreen(viewModel: MainViewModel = viewModel()) {
 
     // 初始化 SettingsManager
     LaunchedEffect(Unit) { SettingsManager.init(context) }
-
-    val permissionLauncher =
-            rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-                    isGranted ->
-                if (isGranted) {
-                    viewModel.startPairingService()
-                    showPairInstruction = true
-                }
-            }
 
     val bgGradient =
             Brush.verticalGradient(
@@ -198,31 +189,10 @@ fun HomeScreen(viewModel: MainViewModel = viewModel()) {
                     StatusCard(
                             statusText = statusText,
                             autoPort = autoPort,
-                            onConnect = { port ->
-                                viewModel.startWirelessActivation("127.0.0.1", port)
-                            },
+                            onConnect = { viewModel.checkPermission() },
                             onPair = {
-                                if (android.os.Build.VERSION.SDK_INT >=
-                                                android.os.Build.VERSION_CODES.TIRAMISU
-                                ) {
-                                    if (androidx.core.content.ContextCompat.checkSelfPermission(
-                                                    context,
-                                                    android.Manifest.permission.POST_NOTIFICATIONS
-                                            ) ==
-                                                    android.content.pm.PackageManager
-                                                            .PERMISSION_GRANTED
-                                    ) {
-                                        viewModel.startPairingService()
-                                        showPairInstruction = true
-                                    } else {
-                                        permissionLauncher.launch(
-                                                android.Manifest.permission.POST_NOTIFICATIONS
-                                        )
-                                    }
-                                } else {
-                                    viewModel.startPairingService()
-                                    showPairInstruction = true
-                                }
+                                viewModel.refreshActivationCommand()
+                                showPairInstruction = true
                             },
                             onShowHelp = { showAuthHelp = true }
                     )
@@ -244,12 +214,69 @@ fun HomeScreen(viewModel: MainViewModel = viewModel()) {
 
     if (showAuthHelp) AuthenticationHelpDialog(onDismiss = { showAuthHelp = false })
     if (showPairInstruction) {
+        val clipboard =
+                context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
         AlertDialog(
                 onDismissRequest = { showPairInstruction = false },
-                title = { Text("配对中") },
-                text = { Text("请在通知栏输入无线调试配对码。") },
+                title = { Text("一次性激活命令") },
+                text = {
+                    Column {
+                        if (activationCommand != null) {
+                            Text(
+                                    "请先在开发者选项开启无线调试，然后在电脑执行下面命令：",
+                                    style = MaterialTheme.typography.bodyMedium
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                    activationCommand!!,
+                                    style = MaterialTheme.typography.bodySmall
+                            )
+                        } else {
+                            Text(
+                                    activationError ?: "激活命令暂不可用",
+                                    style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                            onClick = {
+                                try {
+                                    context.startActivity(
+                                            Intent(
+                                                    AndroidSettings
+                                                            .ACTION_APPLICATION_DEVELOPMENT_SETTINGS
+                                            )
+                                    )
+                                } catch (_: Exception) {
+                                    context.startActivity(Intent(AndroidSettings.ACTION_SETTINGS))
+                                }
+                            }
+                    ) { Text("开发者设置") }
+                },
                 confirmButton = {
-                    TextButton(onClick = { showPairInstruction = false }) { Text("好") }
+                    TextButton(
+                            onClick = {
+                                val command = activationCommand
+                                if (command != null) {
+                                    val clip =
+                                            android.content.ClipData.newPlainText(
+                                                    "embedded_activation_cmd",
+                                                    command
+                                            )
+                                    clipboard.setPrimaryClip(clip)
+                                    android.widget.Toast.makeText(
+                                                    context,
+                                                    "命令已复制",
+                                                    android.widget.Toast.LENGTH_SHORT
+                                            )
+                                            .show()
+                                }
+                                showPairInstruction = false
+                            }
+                    ) { Text("复制并关闭") }
                 }
         )
     }
@@ -294,12 +321,10 @@ fun StatusCard(
         autoPort:
                 Int?, // This parameter is now unused but kept for compatibility or removal in next
         // step
-        onConnect: (Int) -> Unit, // Unused
-        onPair: () -> Unit, // Unused
-        onShowHelp: () -> Unit // Unused
+        onConnect: () -> Unit,
+        onPair: () -> Unit,
+        onShowHelp: () -> Unit
 ) {
-    val context = LocalContext.current
-
     ElevatedCard(
             shape = RoundedCornerShape(24.dp),
             colors =
@@ -340,26 +365,9 @@ fun StatusCard(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // New Action Buttons launching Internal Shizuku Activities
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Button 1: Pairing Tutorial
                 Button(
-                        onClick = {
-                            val intent =
-                                    context.packageManager.getLaunchIntentForPackage(
-                                            "moe.shizuku.manager"
-                                    )
-                            if (intent != null) {
-                                context.startActivity(intent)
-                            } else {
-                                android.widget.Toast.makeText(
-                                                context,
-                                                "请先安装 Shizuku",
-                                                android.widget.Toast.LENGTH_SHORT
-                                        )
-                                        .show()
-                            }
-                        },
+                        onClick = onPair,
                         modifier = Modifier.weight(1f).height(56.dp),
                         shape = RoundedCornerShape(16.dp),
                         colors =
@@ -368,29 +376,13 @@ fun StatusCard(
                                 )
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Filled.QrCodeScanner, null, modifier = Modifier.size(20.dp))
-                        Text("无线配对", fontSize = 12.sp)
+                        Icon(Icons.Filled.ContentCopy, null, modifier = Modifier.size(20.dp))
+                        Text("复制激活命令", fontSize = 12.sp)
                     }
                 }
 
-                // Button 2: Start Service (Starter)
                 Button(
-                        onClick = {
-                            val intent =
-                                    context.packageManager.getLaunchIntentForPackage(
-                                            "moe.shizuku.manager"
-                                    )
-                            if (intent != null) {
-                                context.startActivity(intent)
-                            } else {
-                                android.widget.Toast.makeText(
-                                                context,
-                                                "请先安装 Shizuku",
-                                                android.widget.Toast.LENGTH_SHORT
-                                        )
-                                        .show()
-                            }
-                        },
+                        onClick = onConnect,
                         modifier = Modifier.weight(1f).height(56.dp),
                         shape = RoundedCornerShape(16.dp),
                         colors =
@@ -399,18 +391,18 @@ fun StatusCard(
                                 )
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Filled.PlayArrow, null, modifier = Modifier.size(20.dp))
-                        Text("一键启动", fontSize = 12.sp)
+                        Icon(Icons.Filled.Refresh, null, modifier = Modifier.size(20.dp))
+                        Text("重新检测", fontSize = 12.sp)
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                    "如果服务未运行，请先点击【无线配对】，完成后点击【一键启动】。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-            )
+            OutlinedButton(
+                    onClick = onShowHelp,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(16.dp)
+            ) { Text("查看激活说明") }
         }
     }
 }
@@ -577,10 +569,10 @@ fun AuthenticationHelpDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     AlertDialog(
             onDismissRequest = onDismiss,
-            title = { Text("开启无线激活", fontWeight = FontWeight.Bold) },
+            title = { Text("内置服务激活说明", fontWeight = FontWeight.Bold) },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    Text("1. 请进入开发者选项，开启“无线调试”。")
+                    Text("1. 进入开发者选项，开启“USB 调试”或“无线调试”。")
                     Spacer(modifier = Modifier.height(12.dp))
                     Button(
                             onClick = {
@@ -598,8 +590,8 @@ fun AuthenticationHelpDialog(onDismiss: () -> Unit) {
                             shape = RoundedCornerShape(8.dp)
                     ) { Text("去设置") }
                     Spacer(modifier = Modifier.height(12.dp))
-                    Text("2. 点击“使用配对码配对设备”。")
-                    Text("3. 在通知栏弹出的输入框中填入显示的配对码即可。")
+                    Text("2. 回到首页点击【复制激活命令】。")
+                    Text("3. 在电脑终端执行命令，激活后回 App 点击【重新检测】。")
                 }
             },
             confirmButton = { TextButton(onClick = onDismiss) { Text("了解") } }

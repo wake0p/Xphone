@@ -5,6 +5,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.safe.discipline.data.model.AppInfo
+import com.safe.discipline.data.service.EmbeddedStarter
 import com.safe.discipline.data.service.ShizukuService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,7 +16,6 @@ import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-
     // UI 状态
     private val _statusText = MutableStateFlow("Shizuku 检查中...")
     val statusText: StateFlow<String> = _statusText.asStateFlow()
@@ -31,6 +31,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _autoPort = MutableStateFlow<Int?>(null)
     val autoPort = _autoPort.asStateFlow()
+
+    private val _activationCommand = MutableStateFlow<String?>(null)
+    val activationCommand = _activationCommand.asStateFlow()
+
+    private val _activationError = MutableStateFlow<String?>(null)
+    val activationError = _activationError.asStateFlow()
 
     // 计划任务列表
     private val _plans =
@@ -78,6 +84,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Shizuku.addRequestPermissionResultListener(requestPermissionResultListener)
 
             checkPermission()
+            refreshActivationCommand()
             loadPlans()
             loadGroups()
         } catch (e: Exception) {
@@ -111,7 +118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         } else {
             _hasPermission.value = false
-            _statusText.value = "Shizuku 未运行，请先在 Shizuku App 中启动"
+            _statusText.value = "服务未激活，请在本应用内复制 ADB 命令执行一次激活"
         }
     }
 
@@ -122,6 +129,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 _statusText.value = "授权请求失败: ${e.message}"
             }
+        } else {
+            _statusText.value = "服务未激活，请先完成一次 ADB 激活"
+        }
+    }
+
+    fun refreshActivationCommand() {
+        val context = getApplication<Application>()
+        val command = EmbeddedStarter.buildActivationCommand(context)
+        if (command != null) {
+            _activationCommand.value = command
+            _activationError.value = null
+        } else {
+            _activationCommand.value = null
+            _activationError.value =
+                    "未找到可用 server dex。请放入 app/src/main/assets/，例如 server.dex。${EmbeddedStarter.debugAssetState(context)}"
         }
     }
 
@@ -357,11 +379,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startPairingService() {
-        // Handled by Shizuku app
+        refreshActivationCommand()
     }
 
     fun startWirelessActivation(host: String, port: Int) {
-        // Handled by Shizuku app
+        checkPermission()
     }
 
     fun hideApps(packages: List<String>) {
