@@ -1,0 +1,3 @@
+[submodule "xphone_embedded_server"]
+	path = xphone_embedded_server
+	url = git@github.com:MoyInGxing/Shizuku.git
