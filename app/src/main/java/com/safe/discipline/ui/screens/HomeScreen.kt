@@ -49,6 +49,7 @@ fun HomeScreen(viewModel: MainViewModel = viewModel()) {
     val autoPort by viewModel.autoPort.collectAsState()
     val activationCommand by viewModel.activationCommand.collectAsState()
     val activationError by viewModel.activationError.collectAsState()
+    val wirelessActivationStatus by viewModel.wirelessActivationStatus.collectAsState()
 
     var currentTab by remember { mutableStateOf(HomeTab.CONTROL) }
     var showAuthHelp by remember { mutableStateOf(false) }
@@ -224,8 +225,14 @@ fun HomeScreen(viewModel: MainViewModel = viewModel()) {
                     Column {
                         if (activationCommand != null) {
                             Text(
-                                    "请先在开发者选项开启无线调试，然后在电脑执行下面命令：",
+                                    "先尝试【一键无线启动】。若失败，再在电脑执行下面命令：",
                                     style = MaterialTheme.typography.bodyMedium
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                    wirelessActivationStatus,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.outline
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
@@ -257,26 +264,33 @@ fun HomeScreen(viewModel: MainViewModel = viewModel()) {
                     ) { Text("开发者设置") }
                 },
                 confirmButton = {
-                    TextButton(
-                            onClick = {
-                                val command = activationCommand
-                                if (command != null) {
-                                    val clip =
-                                            android.content.ClipData.newPlainText(
-                                                    "embedded_activation_cmd",
-                                                    command
-                                            )
-                                    clipboard.setPrimaryClip(clip)
-                                    android.widget.Toast.makeText(
-                                                    context,
-                                                    "命令已复制",
-                                                    android.widget.Toast.LENGTH_SHORT
-                                            )
-                                            .show()
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                                onClick = {
+                                    viewModel.startWirelessActivation("127.0.0.1", 5555)
                                 }
-                                showPairInstruction = false
-                            }
-                    ) { Text("复制并关闭") }
+                        ) { Text("一键无线启动") }
+                        TextButton(
+                                onClick = {
+                                    val command = activationCommand
+                                    if (command != null) {
+                                        val clip =
+                                                android.content.ClipData.newPlainText(
+                                                        "embedded_activation_cmd",
+                                                        command
+                                                )
+                                        clipboard.setPrimaryClip(clip)
+                                        android.widget.Toast.makeText(
+                                                        context,
+                                                        "命令已复制",
+                                                        android.widget.Toast.LENGTH_SHORT
+                                                )
+                                                .show()
+                                    }
+                                    showPairInstruction = false
+                                }
+                        ) { Text("复制并关闭") }
+                    }
                 }
         )
     }

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.safe.discipline.data.model.AppInfo
 import com.safe.discipline.data.service.EmbeddedStarter
 import com.safe.discipline.data.service.ShizukuService
+import com.safe.discipline.data.service.WirelessActivationService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +38,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _activationError = MutableStateFlow<String?>(null)
     val activationError = _activationError.asStateFlow()
+
+    private val _wirelessActivationStatus = MutableStateFlow("未尝试无线启动")
+    val wirelessActivationStatus = _wirelessActivationStatus.asStateFlow()
 
     // 计划任务列表
     private val _plans =
@@ -383,7 +387,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startWirelessActivation(host: String, port: Int) {
-        checkPermission()
+        _wirelessActivationStatus.value = "尝试通过无线 ADB 启动中..."
+        viewModelScope.launch(Dispatchers.IO) {
+            val result =
+                    WirelessActivationService.start(getApplication(), host, port)
+            withContext(Dispatchers.Main) {
+                when (result) {
+                    is WirelessActivationService.Result.Success -> {
+                        _wirelessActivationStatus.value = "无线启动命令已发送"
+                        _statusText.value = "无线启动命令已发送，正在检测服务..."
+                        checkPermission()
+                    }
+                    is WirelessActivationService.Result.Failed -> {
+                        _wirelessActivationStatus.value = "无线启动失败: ${result.message}"
+                        _statusText.value = "无线启动失败，请改用复制命令激活"
+                    }
+                }
+            }
+        }
     }
 
     fun hideApps(packages: List<String>) {

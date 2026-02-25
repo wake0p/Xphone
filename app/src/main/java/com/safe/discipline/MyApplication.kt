@@ -2,6 +2,8 @@ package com.safe.discipline
 
 import android.app.Application
 import android.os.Build
+import com.safe.discipline.data.service.WirelessActivationService
+import com.safe.discipline.data.service.localadb.AndroidLocalAdbEngine
 
 class MyApplication : Application() {
     override fun onCreate() {
@@ -21,5 +23,7 @@ class MyApplication : Application() {
         } catch (e: Throwable) {
             android.util.Log.e("OutPhone", "HiddenApiBypass failed", e)
         }
+
+        WirelessActivationService.installEngine(AndroidLocalAdbEngine(this))
     }
 }
